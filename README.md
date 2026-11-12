@@ -53,3 +53,4 @@ Measured on Windows (`rustc 1.99.0`, unoptimized `dev`/`test` profile) via `carg
 | `perf_dictation_orchestrator_1000_sessions_under_budget` | **923.1 µs total** (~**923 ns/session**) | `< 500 ms` |
 | `perf_max_audio_buffer_10mb_cap_under_budget` | **1.741 ms** (10 MB buffer cap & handoff) | `< 250 ms` |
 | `perf_config_toml_parse_1000_iterations_under_budget` | **19.6307 ms total** (~19.6 µs/parse) | `< 500 ms` |
+| `perf_audio_pipeline_3sec_48khz_stereo_under_budget` | **229.0651 ms** (3s 48 kHz stereo → 16 kHz mono FLAC) | `< 500 ms` |

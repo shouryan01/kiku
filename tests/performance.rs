@@ -1,9 +1,11 @@
 use std::time::{Duration, Instant};
 
-use kiku::config::KikuConfig;
+use kiku::audio_pipeline::AudioPipeline;
+use kiku::config::{AudioPipelineConfig, KikuConfig};
 use kiku::ports::{
-    AudioBuffer, AudioFormat, AudioInput, KikuError, MAX_AUDIO_BYTES, MediaController,
-    PostProcessor, STTProvider, SessionState, StatusNotifier, TextInjector,
+    AudioBuffer, AudioFormat, AudioInput, CapturedAudio, KikuError, MAX_AUDIO_BYTES,
+    MediaController, PostProcessor, RawAudio, STTProvider, SessionState, StatusNotifier,
+    TextInjector,
 };
 use kiku::session::DictationCoordinator;
 
@@ -12,8 +14,8 @@ impl AudioInput for NoopAudio {
     fn start_capture(&mut self) -> Result<(), KikuError> {
         Ok(())
     }
-    fn stop_capture(&mut self) -> Result<AudioBuffer, KikuError> {
-        Ok(self.0.clone())
+    fn stop_capture(&mut self) -> Result<CapturedAudio, KikuError> {
+        Ok(CapturedAudio::Encoded(self.0.clone()))
     }
 }
 
@@ -140,5 +142,27 @@ compress_opus_or_flac = true
     assert!(
         elapsed < Duration::from_millis(500),
         "1000 TOML parses took too long: {elapsed:?}"
+    );
+}
+
+#[test]
+fn perf_audio_pipeline_3sec_48khz_stereo_under_budget() {
+    let raw = RawAudio {
+        samples: vec![0.05; 48_000 * 3 * 2],
+        sample_rate: 48_000,
+        channels: 2,
+    };
+    let pipeline = AudioPipeline::new(AudioPipelineConfig::default());
+
+    let start = Instant::now();
+    let _ = pipeline.process(&raw).unwrap();
+    let elapsed = start.elapsed();
+    println!(
+        "perf_audio_pipeline_3sec_48khz_stereo: elapsed={:?}",
+        elapsed
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "3s audio pipeline took too long: {elapsed:?}"
     );
 }

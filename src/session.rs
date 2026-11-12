@@ -1,14 +1,17 @@
 use std::time::Duration;
 
+use crate::audio_pipeline::{AudioPipeline, PipelineOutput};
+use crate::config::AudioPipelineConfig;
 use crate::ports::{
-    AudioBuffer, AudioInput, KikuError, MAX_AUDIO_BYTES, MAX_SESSION_DURATION, MIN_HOLD_DURATION,
-    MediaController, PostProcessor, STTProvider, SessionOutcome, SessionState, StatusNotifier,
-    TextInjector,
+    AudioBuffer, AudioInput, CapturedAudio, KikuError, MAX_AUDIO_BYTES, MAX_SESSION_DURATION,
+    MIN_HOLD_DURATION, MediaController, PostProcessor, STTProvider, SessionOutcome, SessionState,
+    StatusNotifier, TextInjector,
 };
 
 /// Coordinates the lifecycle of a single Dictation Session across platform and cloud ports.
 pub struct DictationCoordinator<A, S, P, T, M, N> {
     audio: A,
+    pipeline: AudioPipeline,
     stt: S,
     post_processor: P,
     injector: T,
@@ -32,8 +35,29 @@ where
     N: StatusNotifier,
 {
     pub fn new(audio: A, stt: S, post_processor: P, injector: T, media: M, notifier: N) -> Self {
+        Self::with_pipeline_config(
+            audio,
+            AudioPipelineConfig::default(),
+            stt,
+            post_processor,
+            injector,
+            media,
+            notifier,
+        )
+    }
+
+    pub fn with_pipeline_config(
+        audio: A,
+        pipeline_config: AudioPipelineConfig,
+        stt: S,
+        post_processor: P,
+        injector: T,
+        media: M,
+        notifier: N,
+    ) -> Self {
         Self {
             audio,
+            pipeline: AudioPipeline::new(pipeline_config),
             stt,
             post_processor,
             injector,
@@ -75,7 +99,7 @@ where
             .take()
             .ok_or(KikuError::NoActiveSession)?;
 
-        let mut buffer = match self.audio.stop_capture() {
+        let captured = match self.audio.stop_capture() {
             Ok(buf) => buf,
             Err(err) => {
                 self.conclude_session(session.paused_by_kiku, SessionState::Error);
@@ -87,6 +111,21 @@ where
             self.conclude_session(session.paused_by_kiku, SessionState::Idle);
             return Ok(SessionOutcome::IgnoredTap);
         }
+
+        let mut buffer = match captured {
+            CapturedAudio::Encoded(buf) => buf,
+            CapturedAudio::Raw(raw) => match self.pipeline.process(&raw) {
+                Ok(PipelineOutput::Ready(buf)) => buf,
+                Ok(PipelineOutput::NoSpeech) => {
+                    self.conclude_session(session.paused_by_kiku, SessionState::Idle);
+                    return Ok(SessionOutcome::NoSpeech);
+                }
+                Err(err) => {
+                    self.conclude_session(session.paused_by_kiku, SessionState::Error);
+                    return Err(err);
+                }
+            },
+        };
 
         if buffer.bytes.len() > MAX_AUDIO_BYTES {
             buffer.bytes.truncate(MAX_AUDIO_BYTES);

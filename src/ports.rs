@@ -46,6 +46,21 @@ impl AudioFormat {
     }
 }
 
+/// Raw PCM audio captured from a microphone before Audio Pipeline preprocessing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RawAudio {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+/// Output of AudioInput::stop_capture: either raw PCM for the Audio Pipeline or pre-encoded bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CapturedAudio {
+    Raw(RawAudio),
+    Encoded(AudioBuffer),
+}
+
 /// Captured or preprocessed audio payload for a Dictation Session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioBuffer {
@@ -73,6 +88,8 @@ pub enum KikuError {
     Config(String),
     #[error("audio capture error: {0}")]
     AudioCapture(String),
+    #[error("audio pipeline error: {0}")]
+    AudioPipeline(String),
     #[error("STT provider error: {0}")]
     Stt(String),
     #[error("post-processor error: {0}")]
@@ -90,7 +107,7 @@ pub enum KikuError {
 /// Captures microphone audio for a Dictation Session.
 pub trait AudioInput {
     fn start_capture(&mut self) -> Result<(), KikuError>;
-    fn stop_capture(&mut self) -> Result<AudioBuffer, KikuError>;
+    fn stop_capture(&mut self) -> Result<CapturedAudio, KikuError>;
 }
 
 /// Cloud speech-to-text provider.

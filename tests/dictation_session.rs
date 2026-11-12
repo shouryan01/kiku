@@ -4,14 +4,14 @@ use std::time::Duration;
 
 use kiku::config::KikuConfig;
 use kiku::ports::{
-    AudioBuffer, AudioFormat, AudioInput, KikuError, MAX_AUDIO_BYTES, MAX_SESSION_DURATION,
-    MediaController, PostProcessor, STTProvider, SessionOutcome, SessionState, StatusNotifier,
-    TextInjector,
+    AudioBuffer, AudioFormat, AudioInput, CapturedAudio, KikuError, MAX_AUDIO_BYTES,
+    MAX_SESSION_DURATION, MediaController, PostProcessor, RawAudio, STTProvider, SessionOutcome,
+    SessionState, StatusNotifier, TextInjector,
 };
 use kiku::session::DictationCoordinator;
 
 struct FakeAudio {
-    buffer: AudioBuffer,
+    captured: CapturedAudio,
     fail_start: bool,
     fail_stop: bool,
 }
@@ -19,10 +19,18 @@ struct FakeAudio {
 impl FakeAudio {
     fn new(bytes: Vec<u8>) -> Self {
         Self {
-            buffer: AudioBuffer {
+            captured: CapturedAudio::Encoded(AudioBuffer {
                 bytes,
                 format: AudioFormat::Wav,
-            },
+            }),
+            fail_start: false,
+            fail_stop: false,
+        }
+    }
+
+    fn raw(raw: RawAudio) -> Self {
+        Self {
+            captured: CapturedAudio::Raw(raw),
             fail_start: false,
             fail_stop: false,
         }
@@ -36,11 +44,11 @@ impl AudioInput for FakeAudio {
         }
         Ok(())
     }
-    fn stop_capture(&mut self) -> Result<AudioBuffer, KikuError> {
+    fn stop_capture(&mut self) -> Result<CapturedAudio, KikuError> {
         if self.fail_stop {
             return Err(KikuError::AudioCapture("mic disconnected".to_owned()));
         }
-        Ok(self.buffer.clone())
+        Ok(self.captured.clone())
     }
 }
 
@@ -288,6 +296,35 @@ fn empty_audio_aborts_locally_as_no_speech_and_resumes_media() {
 
     let mut coordinator = DictationCoordinator::new(
         FakeAudio::new(vec![]),
+        stt,
+        FakePost::ok("should not run"),
+        FakeInjector::default(),
+        media,
+        FakeNotifier::default(),
+    );
+
+    coordinator.start_session().unwrap();
+    let outcome = coordinator
+        .finish_session(Duration::from_millis(500))
+        .unwrap();
+
+    assert_eq!(outcome, SessionOutcome::NoSpeech);
+    assert_eq!(stt_calls.get(), 0);
+    assert_eq!(resumed.get(), 1);
+}
+
+#[test]
+fn raw_silence_via_audio_pipeline_aborts_locally_and_resumes_media() {
+    let (stt, stt_calls, _) = FakeStt::ok("should not run");
+    let (media, _, resumed) = FakeMedia::playing();
+    let silence = RawAudio {
+        samples: vec![0.0; 24_000],
+        sample_rate: 48_000,
+        channels: 1,
+    };
+
+    let mut coordinator = DictationCoordinator::new(
+        FakeAudio::raw(silence),
         stt,
         FakePost::ok("should not run"),
         FakeInjector::default(),
