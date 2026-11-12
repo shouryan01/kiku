@@ -87,10 +87,11 @@ fn run() -> Result<(), KikuError> {
             let stt = GroqSttProvider::new(api_key.clone(), config.stt_model)?;
             let post = GroqPostProcessor::new(api_key, config.post_process_model)?;
 
-            let mut coordinator = DictationCoordinator::new(
+            let mut coordinator = DictationCoordinator::with_pipeline_config(
                 FileAudioInput {
                     path: PathBuf::from(audio_path),
                 },
+                config.audio_pipeline,
                 stt,
                 post,
                 StdoutInjector,

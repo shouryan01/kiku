@@ -59,9 +59,15 @@ impl AudioPipeline {
             current_rate = TARGET_SAMPLE_RATE;
         }
 
-        if self.config.vad_trim && current_rate == TARGET_SAMPLE_RATE {
-            match trim_silence_vad(&mono) {
-                Some(trimmed) => mono = trimmed,
+        if self.config.vad_trim {
+            let trimmed = if current_rate == TARGET_SAMPLE_RATE {
+                trim_silence_vad(&mono, current_rate)
+            } else {
+                let vad_16k = resample_mono(&mono, current_rate, TARGET_SAMPLE_RATE)?;
+                trim_silence_vad_mapped(&mono, current_rate, &vad_16k)
+            };
+            match trimmed {
+                Some(t) => mono = t,
                 None => return Ok(PipelineOutput::NoSpeech),
             }
         }
@@ -157,17 +163,16 @@ fn normalize_rms_and_peak(samples: &mut [f32]) {
     }
 }
 
-fn trim_silence_vad(samples_16k: &[f32]) -> Option<Vec<f32>> {
+fn detect_speech_frame_bounds(samples_16k: &[f32]) -> Option<(usize, usize)> {
     let mut detector = Detector::default_boxed();
-    let total_frames = samples_16k.len() / VAD_FRAME_SIZE;
-    if total_frames == 0 {
+    let (frames, _) = samples_16k.as_chunks::<VAD_FRAME_SIZE>();
+    if frames.is_empty() {
         return None;
     }
 
     let mut first_speech: Option<usize> = None;
     let mut last_speech: Option<usize> = None;
 
-    let (frames, _) = samples_16k.as_chunks::<VAD_FRAME_SIZE>();
     for (idx, frame) in frames.iter().enumerate() {
         let mut buf = *frame;
         for s in &mut buf {
@@ -182,17 +187,40 @@ fn trim_silence_vad(samples_16k: &[f32]) -> Option<Vec<f32>> {
     }
 
     let (start_frame, end_frame) = (first_speech?, last_speech?);
-    let padded_start = start_frame.saturating_sub(VAD_PAD_FRAMES) * VAD_FRAME_SIZE;
-    let padded_end = ((end_frame + 1 + VAD_PAD_FRAMES).min(total_frames) * VAD_FRAME_SIZE)
-        .min(samples_16k.len());
+    let padded_start = start_frame.saturating_sub(VAD_PAD_FRAMES);
+    let padded_end = (end_frame + 1 + VAD_PAD_FRAMES).min(frames.len());
+    Some((padded_start, padded_end))
+}
 
-    Some(samples_16k[padded_start..padded_end].to_vec())
+fn trim_silence_vad(samples_16k: &[f32], _rate: u32) -> Option<Vec<f32>> {
+    let (start_frame, end_frame) = detect_speech_frame_bounds(samples_16k)?;
+    let start_sample = start_frame * VAD_FRAME_SIZE;
+    let end_sample = (end_frame * VAD_FRAME_SIZE).min(samples_16k.len());
+    Some(samples_16k[start_sample..end_sample].to_vec())
+}
+
+fn trim_silence_vad_mapped(
+    samples: &[f32],
+    sample_rate: u32,
+    samples_16k: &[f32],
+) -> Option<Vec<f32>> {
+    let (start_frame, end_frame) = detect_speech_frame_bounds(samples_16k)?;
+    let scale = sample_rate as f64 / TARGET_SAMPLE_RATE as f64;
+    let start_sample = ((start_frame * VAD_FRAME_SIZE) as f64 * scale).floor() as usize;
+    let end_sample =
+        (((end_frame * VAD_FRAME_SIZE) as f64 * scale).ceil() as usize).min(samples.len());
+    Some(samples[start_sample.min(samples.len())..end_sample].to_vec())
+}
+
+#[inline]
+fn f32_to_pcm_i16(sample: f32) -> i16 {
+    (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16
 }
 
 fn encode_flac(samples: &[f32], sample_rate: u32) -> Result<AudioBuffer, KikuError> {
     let pcm_i32: Vec<i32> = samples
         .iter()
-        .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0).round() as i32)
+        .map(|&s| i32::from(f32_to_pcm_i16(s)))
         .collect();
 
     let config = flacenc::config::Encoder::default()
@@ -230,8 +258,7 @@ fn encode_wav(samples: &[f32], sample_rate: u32) -> AudioBuffer {
     bytes.extend_from_slice(b"data");
     bytes.extend_from_slice(&data_bytes.to_le_bytes());
     for &s in samples {
-        let sample_i16 = (s.clamp(-1.0, 1.0) * 32767.0).round() as i16;
-        bytes.extend_from_slice(&sample_i16.to_le_bytes());
+        bytes.extend_from_slice(&f32_to_pcm_i16(s).to_le_bytes());
     }
     AudioBuffer {
         bytes,

@@ -127,3 +127,85 @@ fn disabling_vad_and_rnnoise_resamples_full_clip_to_16khz_mono_wav() {
         PipelineOutput::NoSpeech => panic!("expected NoSpeech only when VAD is enabled"),
     }
 }
+
+#[test]
+fn vad_trims_leading_and_trailing_silence_from_wav_output() {
+    // 1.5s silence + 0.8s speech + 1.5s silence = 3.8s total @ 48kHz stereo
+    let raw = synth_speech_like_48k_stereo(1.5, 0.8, 1.5);
+    let config = AudioPipelineConfig {
+        compress_opus_or_flac: false,
+        ..AudioPipelineConfig::default()
+    };
+    let pipeline = AudioPipeline::new(config);
+
+    match pipeline.process(&raw).unwrap() {
+        PipelineOutput::Ready(buf) => {
+            assert_eq!(buf.format, AudioFormat::Wav);
+            // Un-trimmed 3.8s @ 16kHz mono 16-bit WAV would be ~121,644 bytes.
+            // Trimmed 0.8s + ~0.2s padding should be ~32,000 bytes (definitely < 55,000 bytes).
+            assert!(
+                buf.bytes.len() < 55_000,
+                "expected trimmed WAV < 55KB, got {} bytes",
+                buf.bytes.len()
+            );
+        }
+        PipelineOutput::NoSpeech => panic!("expected speech to be detected"),
+    }
+}
+
+#[test]
+fn normalization_boosts_quiet_signal_amplitude() {
+    // Very quiet speech-like signal (amplitude 0.01)
+    let rate = 48_000usize;
+    let mut samples = Vec::with_capacity(rate);
+    for i in 0..rate {
+        let t = i as f32 / rate as f32;
+        samples.push(0.01 * ((2.0 * PI * 180.0 * t).sin() + 0.5 * (2.0 * PI * 360.0 * t).sin()));
+    }
+    let raw = RawAudio {
+        samples,
+        sample_rate: rate as u32,
+        channels: 1,
+    };
+
+    let unnormalized = AudioPipeline::new(AudioPipelineConfig {
+        noise_suppression: false,
+        vad_trim: false,
+        compress_opus_or_flac: false,
+        resample_16khz_mono: true,
+    })
+    .process(&raw)
+    .unwrap();
+
+    let normalized = AudioPipeline::new(AudioPipelineConfig {
+        noise_suppression: true,
+        vad_trim: false,
+        compress_opus_or_flac: false,
+        resample_16khz_mono: true,
+    })
+    .process(&raw)
+    .unwrap();
+
+    let peak = |bytes: &[u8]| -> i16 {
+        bytes[44..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| i16::from_le_bytes(*c).saturating_abs())
+            .max()
+            .unwrap_or(0)
+    };
+
+    if let (PipelineOutput::Ready(raw_wav), PipelineOutput::Ready(norm_wav)) =
+        (unnormalized, normalized)
+    {
+        assert!(
+            peak(&norm_wav.bytes) > peak(&raw_wav.bytes) * 2,
+            "expected normalization to boost quiet signal (raw peak={}, norm peak={})",
+            peak(&raw_wav.bytes),
+            peak(&norm_wav.bytes)
+        );
+    } else {
+        panic!("expected Ready WAV outputs");
+    }
+}
