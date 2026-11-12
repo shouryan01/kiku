@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use kiku::adapters::audio_cpal::CpalAudioInput;
+use kiku::adapters::media_controller::OsMediaController;
 use kiku::adapters::text_injector::{ClipboardTextInjector, is_accessibility_trusted};
 use kiku::config::KikuConfig;
 use kiku::ports::{
@@ -133,7 +134,7 @@ fn run() -> Result<(), KikuError> {
                 stt,
                 post,
                 injector,
-                NoopMedia,
+                OsMediaController::default(),
                 StderrNotifier,
             );
 
