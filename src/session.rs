@@ -48,6 +48,11 @@ where
         self.retry_buffer.is_some()
     }
 
+    /// Returns true when an active Dictation Session has reached MAX_SESSION_DURATION.
+    pub fn is_duration_capped(elapsed: Duration) -> bool {
+        elapsed >= MAX_SESSION_DURATION
+    }
+
     pub fn start_session(&mut self) -> Result<(), KikuError> {
         if self.active_session.is_some() {
             return Err(KikuError::SessionAlreadyActive);
@@ -55,10 +60,7 @@ where
 
         let paused_by_kiku = self.media.pause_if_playing();
         if let Err(err) = self.audio.start_capture() {
-            if paused_by_kiku {
-                self.media.resume();
-            }
-            self.notifier.notify(SessionState::Error);
+            self.conclude_session(paused_by_kiku, SessionState::Error);
             return Err(err);
         }
 
@@ -76,15 +78,13 @@ where
         let mut buffer = match self.audio.stop_capture() {
             Ok(buf) => buf,
             Err(err) => {
-                self.resume_if_paused(session.paused_by_kiku);
-                self.notifier.notify(SessionState::Error);
+                self.conclude_session(session.paused_by_kiku, SessionState::Error);
                 return Err(err);
             }
         };
 
         if hold_duration < MIN_HOLD_DURATION {
-            self.resume_if_paused(session.paused_by_kiku);
-            self.notifier.notify(SessionState::Idle);
+            self.conclude_session(session.paused_by_kiku, SessionState::Idle);
             return Ok(SessionOutcome::IgnoredTap);
         }
 
@@ -93,13 +93,9 @@ where
         }
 
         if buffer.bytes.is_empty() {
-            self.resume_if_paused(session.paused_by_kiku);
-            self.notifier.notify(SessionState::Idle);
+            self.conclude_session(session.paused_by_kiku, SessionState::Idle);
             return Ok(SessionOutcome::NoSpeech);
         }
-
-        // Enforce duration invariant awareness for callers (capture is already stopped).
-        let _ = hold_duration.min(MAX_SESSION_DURATION);
 
         // New valid capture replaces any previous failed retry buffer.
         self.retry_buffer = None;
@@ -123,8 +119,7 @@ where
             Ok(text) => text,
             Err(err) => {
                 self.retry_buffer = Some(buffer);
-                self.resume_if_paused(paused_by_kiku);
-                self.notifier.notify(SessionState::RetryAvailable);
+                self.conclude_session(paused_by_kiku, SessionState::RetryAvailable);
                 return Err(err);
             }
         };
@@ -135,22 +130,21 @@ where
         };
 
         if let Err(err) = self.injector.inject(&final_text) {
-            self.resume_if_paused(paused_by_kiku);
-            self.notifier.notify(SessionState::Error);
+            self.conclude_session(paused_by_kiku, SessionState::Error);
             return Err(err);
         }
 
-        self.resume_if_paused(paused_by_kiku);
-        self.notifier.notify(SessionState::Idle);
+        self.conclude_session(paused_by_kiku, SessionState::Idle);
         Ok(SessionOutcome::Injected {
             text: final_text,
             used_raw_fallback,
         })
     }
 
-    fn resume_if_paused(&mut self, paused_by_kiku: bool) {
+    fn conclude_session(&mut self, paused_by_kiku: bool, state: SessionState) {
         if paused_by_kiku {
             self.media.resume();
         }
+        self.notifier.notify(state);
     }
 }

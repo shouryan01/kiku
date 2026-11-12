@@ -1,4 +1,4 @@
-use reqwest::blocking::{Client, multipart};
+use reqwest::blocking::{Client, Response, multipart};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -12,20 +12,20 @@ Fix punctuation and capitalization. \
 Preserve the speaker's exact wording, tone, and meaning. Do not summarize, paraphrase, or add commentary. \
 Output only the cleaned transcript text.";
 
-/// Groq Whisper speech-to-text client (`whisper-large-v3-turbo` by default).
-pub struct GroqSttProvider {
+struct GroqEndpoint {
     client: Client,
     api_key: String,
     model: String,
     base_url: String,
 }
 
-impl GroqSttProvider {
-    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self, KikuError> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(30))
-            .build()
-            .map_err(|e| KikuError::Stt(format!("failed to build HTTP client: {e}")))?;
+impl GroqEndpoint {
+    fn new(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        timeout: Duration,
+    ) -> Result<Self, reqwest::Error> {
+        let client = Client::builder().timeout(timeout).build()?;
         Ok(Self {
             client,
             api_key: api_key.into(),
@@ -34,8 +34,38 @@ impl GroqSttProvider {
         })
     }
 
+    fn url(&self, path: &str) -> String {
+        format!("{}{}", self.base_url.trim_end_matches('/'), path)
+    }
+
+    fn check_response(
+        resp: Response,
+        label: &str,
+        make_err: fn(String) -> KikuError,
+    ) -> Result<Response, KikuError> {
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            return Err(make_err(format!("{label} HTTP {status}: {body}")));
+        }
+        Ok(resp)
+    }
+}
+
+/// Groq Whisper STT Provider (`whisper-large-v3-turbo` by default).
+pub struct GroqSttProvider {
+    endpoint: GroqEndpoint,
+}
+
+impl GroqSttProvider {
+    pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self, KikuError> {
+        let endpoint = GroqEndpoint::new(api_key, model, Duration::from_secs(30))
+            .map_err(|e| KikuError::Stt(format!("failed to build HTTP client: {e}")))?;
+        Ok(Self { endpoint })
+    }
+
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
+        self.endpoint.base_url = base_url.into();
         self
     }
 }
@@ -54,27 +84,19 @@ impl STTProvider for GroqSttProvider {
 
         let form = multipart::Form::new()
             .part("file", part)
-            .text("model", self.model.clone())
+            .text("model", self.endpoint.model.clone())
             .text("response_format", "json");
 
-        let url = format!(
-            "{}/audio/transcriptions",
-            self.base_url.trim_end_matches('/')
-        );
         let resp = self
+            .endpoint
             .client
-            .post(url)
-            .bearer_auth(&self.api_key)
+            .post(self.endpoint.url("/audio/transcriptions"))
+            .bearer_auth(&self.endpoint.api_key)
             .multipart(form)
             .send()
             .map_err(|e| KikuError::Stt(format!("Groq STT request failed: {e}")))?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().unwrap_or_default();
-            return Err(KikuError::Stt(format!("Groq STT HTTP {status}: {body}")));
-        }
-
+        let resp = GroqEndpoint::check_response(resp, "Groq STT", KikuError::Stt)?;
         let parsed: TranscriptionResponse = resp
             .json()
             .map_err(|e| KikuError::Stt(format!("invalid Groq STT JSON: {e}")))?;
@@ -82,30 +104,20 @@ impl STTProvider for GroqSttProvider {
     }
 }
 
-/// Groq LLM post-processor (`llama-3.1-8b-instant` by default) in Clean mode.
+/// Groq LLM Post-Processor (`llama-3.1-8b-instant` by default) in Clean mode.
 pub struct GroqPostProcessor {
-    client: Client,
-    api_key: String,
-    model: String,
-    base_url: String,
+    endpoint: GroqEndpoint,
 }
 
 impl GroqPostProcessor {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Result<Self, KikuError> {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(15))
-            .build()
+        let endpoint = GroqEndpoint::new(api_key, model, Duration::from_secs(15))
             .map_err(|e| KikuError::PostProcess(format!("failed to build HTTP client: {e}")))?;
-        Ok(Self {
-            client,
-            api_key: api_key.into(),
-            model: model.into(),
-            base_url: GROQ_BASE_URL.to_owned(),
-        })
+        Ok(Self { endpoint })
     }
 
     pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
-        self.base_url = base_url.into();
+        self.endpoint.base_url = base_url.into();
         self
     }
 }
@@ -145,7 +157,7 @@ impl PostProcessor for GroqPostProcessor {
         }
 
         let payload = ChatCompletionRequest {
-            model: &self.model,
+            model: &self.endpoint.model,
             temperature: 0.0,
             messages: [
                 ChatMessage {
@@ -159,25 +171,18 @@ impl PostProcessor for GroqPostProcessor {
             ],
         };
 
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
         let resp = self
+            .endpoint
             .client
-            .post(url)
-            .bearer_auth(&self.api_key)
+            .post(self.endpoint.url("/chat/completions"))
+            .bearer_auth(&self.endpoint.api_key)
             .json(&payload)
             .send()
             .map_err(|e| {
                 KikuError::PostProcess(format!("Groq post-process request failed: {e}"))
             })?;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().unwrap_or_default();
-            return Err(KikuError::PostProcess(format!(
-                "Groq post-process HTTP {status}: {body}"
-            )));
-        }
-
+        let resp = GroqEndpoint::check_response(resp, "Groq post-process", KikuError::PostProcess)?;
         let parsed: ChatCompletionResponse = resp
             .json()
             .map_err(|e| KikuError::PostProcess(format!("invalid Groq post-process JSON: {e}")))?;
