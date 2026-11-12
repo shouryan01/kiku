@@ -1,0 +1,120 @@
+name: CI & Release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # Shared validation steps run once before OS-specific builds
+  check-and-test:
+    name: Shared Lint, Clippy & Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run unit, integration & performance tests
+        run: cargo test --all-targets -- --nocapture
+
+  build-macos:
+    name: Build macOS Binary
+    needs: check-and-test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Package macOS artifact
+        run: |
+          mkdir -p dist
+          cp target/release/kiku dist/kiku
+          tar -czf kiku-macos.tar.gz -C dist kiku
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiku-macos
+          path: kiku-macos.tar.gz
+
+  # Uncomment when ready to add Windows builds:
+  # build-windows:
+  #   name: Build Windows Binary
+  #   needs: check-and-test
+  #   runs-on: windows-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Install Rust stable
+  #       uses: dtolnay/rust-toolchain@stable
+  #
+  #     - uses: Swatinem/rust-cache@v2
+  #
+  #     - name: Build release binary
+  #       run: cargo build --release
+  #
+  #     - name: Package Windows artifact
+  #       shell: pwsh
+  #       run: |
+  #         New-Item -ItemType Directory -Force -Path dist | Out-Null
+  #         Copy-Item target/release/kiku.exe dist/kiku.exe
+  #         Compress-Archive -Path dist/kiku.exe -DestinationPath kiku-windows.zip
+  #
+  #     - name: Upload Windows artifact
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: kiku-windows
+  #         path: kiku-windows.zip
+
+  release:
+    name: Create GitHub Release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compute release tag
+        id: tag
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | head -n1 | cut -d'"' -f2)
+          echo "tag=v${VERSION}-build.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "kiku ${{ steps.tag.outputs.tag }}"
+          generate_release_notes: true
+          files: |
+            artifacts/kiku-macos/kiku-macos.tar.gz
