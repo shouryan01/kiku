@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/kiku-logo.png" alt="kiku logo" width="160" />
+</p>
+
 # kiku
 
 A fast, ultra-low-RAM voice dictation desktop app written in Rust (macOS primary, Windows supported). Press and hold a key to dictate, automatically pause background music, clean audio in memory, transcribe via free-tier cloud STT, strip filler words, and paste directly at your cursor.
