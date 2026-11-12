@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use kiku::config::KikuConfig;
 use kiku::ports::{
-    AudioBuffer, AudioFormat, AudioInput, KikuError, MediaController, SessionOutcome, SessionState,
-    StatusNotifier, TextInjector,
+    AudioBuffer, AudioFormat, AudioInput, CapturedAudio, KikuError, MediaController,
+    SessionOutcome, SessionState, StatusNotifier, TextInjector,
 };
 use kiku::providers::groq::{GroqPostProcessor, GroqSttProvider};
 use kiku::session::DictationCoordinator;
@@ -26,7 +26,7 @@ impl AudioInput for FileAudioInput {
         Ok(())
     }
 
-    fn stop_capture(&mut self) -> Result<AudioBuffer, KikuError> {
+    fn stop_capture(&mut self) -> Result<CapturedAudio, KikuError> {
         let bytes = std::fs::read(&self.path).map_err(|e| {
             KikuError::AudioCapture(format!("failed to read {}: {e}", self.path.display()))
         })?;
@@ -35,7 +35,7 @@ impl AudioInput for FileAudioInput {
             Some("ogg") | Some("opus") => AudioFormat::OggOpus,
             _ => AudioFormat::Wav,
         };
-        Ok(AudioBuffer { bytes, format })
+        Ok(CapturedAudio::Encoded(AudioBuffer { bytes, format }))
     }
 }
 
