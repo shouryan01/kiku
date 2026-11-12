@@ -1,4 +1,4 @@
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::time::{Duration, Instant};
 
 use crate::ports::{
@@ -139,6 +139,13 @@ impl HoldKeyTracker {
     }
 }
 
+/// Control messages sent from the tray UI to the background hold-loop worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerControl {
+    Retry,
+    Quit,
+}
+
 /// Runs the global hold-key event loop until the key-event channel disconnects.
 pub fn run_hold_loop<A, S, P, T, M, N>(
     coordinator: &mut DictationCoordinator<A, S, P, T, M, N>,
@@ -151,10 +158,38 @@ pub fn run_hold_loop<A, S, P, T, M, N>(
     M: MediaController,
     N: StatusNotifier,
 {
+    run_hold_loop_with_control(coordinator, events, None);
+}
+
+/// Runs the global hold-key event loop with optional tray control messages (Retry / Quit).
+pub fn run_hold_loop_with_control<A, S, P, T, M, N>(
+    coordinator: &mut DictationCoordinator<A, S, P, T, M, N>,
+    events: &Receiver<KeyEdge>,
+    control: Option<&Receiver<WorkerControl>>,
+) where
+    A: AudioInput,
+    S: STTProvider,
+    P: PostProcessor,
+    T: TextInjector,
+    M: MediaController,
+    N: StatusNotifier,
+{
     let mut tracker = HoldKeyTracker::new();
     let tick = Duration::from_millis(20);
 
     loop {
+        if let Some(ctrl_rx) = control {
+            match ctrl_rx.try_recv() {
+                Ok(WorkerControl::Retry) => {
+                    if let Err(err) = coordinator.retry_last_session() {
+                        eprintln!("[kiku] retry error: {err}");
+                    }
+                }
+                Ok(WorkerControl::Quit) | Err(TryRecvError::Disconnected) => break,
+                Err(TryRecvError::Empty) => {}
+            }
+        }
+
         match events.recv_timeout(tick) {
             Ok(KeyEdge::Down) => tracker.on_key_down(Instant::now()),
             Ok(KeyEdge::Up) => {
