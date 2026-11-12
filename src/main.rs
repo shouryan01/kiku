@@ -4,6 +4,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use kiku::adapters::activation_key::{
+    ActivationKey, is_input_monitoring_trusted, run_hold_loop, spawn_key_listener,
+};
 use kiku::adapters::audio_cpal::CpalAudioInput;
 use kiku::adapters::media_controller::OsMediaController;
 use kiku::adapters::text_injector::{ClipboardTextInjector, is_accessibility_trusted};
@@ -161,9 +164,47 @@ fn run() -> Result<(), KikuError> {
             }
             Ok(())
         }
+        Some("run") => {
+            if !is_input_monitoring_trusted() {
+                return Err(KikuError::Config(
+                    "macOS Input Monitoring permission is required. Enable kiku in System Settings -> Privacy & Security -> Input Monitoring.".to_owned(),
+                ));
+            }
+            if !is_accessibility_trusted() {
+                return Err(KikuError::Injection(
+                    "macOS Accessibility permission is required for pasting. Enable kiku in System Settings -> Privacy & Security -> Accessibility.".to_owned(),
+                ));
+            }
+            let config_path = KikuConfig::default_path()?;
+            let config = KikuConfig::load_from_path(&config_path)?;
+            let api_key = config.resolve_groq_api_key()?;
+            let key = ActivationKey::parse(&config.activation_key)?;
+
+            let stt = GroqSttProvider::new(api_key.clone(), config.stt_model)?;
+            let post = GroqPostProcessor::new(api_key, config.post_process_model)?;
+            let injector = ClipboardTextInjector::new_os()?;
+
+            let mut coordinator = DictationCoordinator::with_pipeline_config(
+                CpalAudioInput::new(),
+                config.audio_pipeline,
+                stt,
+                post,
+                injector,
+                OsMediaController::default(),
+                StderrNotifier,
+            );
+
+            let events = spawn_key_listener(key)?;
+            eprintln!(
+                "[kiku] Listening for press-and-hold on {:?}. Press Ctrl+C to quit.",
+                key
+            );
+            run_hold_loop(&mut coordinator, &events);
+            Ok(())
+        }
         _ => {
             eprintln!(
-                "Usage:\n  kiku config-path\n  kiku init-config\n  kiku smoke <audio-file>\n  kiku dictate"
+                "Usage:\n  kiku config-path\n  kiku init-config\n  kiku smoke <audio-file>\n  kiku dictate\n  kiku run"
             );
             Ok(())
         }
