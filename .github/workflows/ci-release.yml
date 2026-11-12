@@ -3,6 +3,7 @@ name: CI & Release
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
 
@@ -13,9 +14,13 @@ jobs:
   # Shared validation steps run once before OS-specific builds
   check-and-test:
     name: Shared Lint, Clippy & Tests
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: Install Linux audio/input dev headers for shared checks
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libxdo-dev libxtst-dev pkg-config
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable

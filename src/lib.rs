@@ -1,3 +1,4 @@
+pub mod adapters;
 pub mod audio_pipeline;
 pub mod config;
 pub mod ports;

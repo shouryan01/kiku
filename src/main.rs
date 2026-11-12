@@ -1,8 +1,11 @@
 use std::env;
+use std::io::{self, BufRead};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use kiku::adapters::audio_cpal::CpalAudioInput;
+use kiku::adapters::text_injector::{ClipboardTextInjector, is_accessibility_trusted};
 use kiku::config::KikuConfig;
 use kiku::ports::{
     AudioBuffer, AudioFormat, AudioInput, CapturedAudio, KikuError, MediaController,
@@ -110,8 +113,57 @@ fn run() -> Result<(), KikuError> {
             }
             Ok(())
         }
+        Some("dictate") => {
+            if !is_accessibility_trusted() {
+                return Err(KikuError::Injection(
+                    "macOS Accessibility permission is required for pasting. Enable kiku in System Settings -> Privacy & Security -> Accessibility.".to_owned(),
+                ));
+            }
+            let config_path = KikuConfig::default_path()?;
+            let config = KikuConfig::load_from_path(&config_path)?;
+            let api_key = config.resolve_groq_api_key()?;
+
+            let stt = GroqSttProvider::new(api_key.clone(), config.stt_model)?;
+            let post = GroqPostProcessor::new(api_key, config.post_process_model)?;
+            let injector = ClipboardTextInjector::new_os()?;
+
+            let mut coordinator = DictationCoordinator::with_pipeline_config(
+                CpalAudioInput::new(),
+                config.audio_pipeline,
+                stt,
+                post,
+                injector,
+                NoopMedia,
+                StderrNotifier,
+            );
+
+            eprintln!("[kiku] Recording from default microphone. Press Enter to stop and paste...");
+            let started_at = Instant::now();
+            coordinator.start_session()?;
+
+            let mut line = String::new();
+            let _ = io::stdin().lock().read_line(&mut line);
+
+            match coordinator.finish_session(started_at.elapsed())? {
+                SessionOutcome::IgnoredTap => {
+                    eprintln!("[kiku] Hold was under 250ms; ignored.");
+                }
+                SessionOutcome::NoSpeech => {
+                    eprintln!("[kiku] No speech detected; aborted locally.");
+                }
+                SessionOutcome::Injected {
+                    used_raw_fallback, ..
+                } if used_raw_fallback => {
+                    eprintln!("[kiku] warning: post-processor failed, used raw STT transcript");
+                }
+                SessionOutcome::Injected { .. } => {}
+            }
+            Ok(())
+        }
         _ => {
-            eprintln!("Usage:\n  kiku config-path\n  kiku init-config\n  kiku smoke <audio-file>");
+            eprintln!(
+                "Usage:\n  kiku config-path\n  kiku init-config\n  kiku smoke <audio-file>\n  kiku dictate"
+            );
             Ok(())
         }
     }
