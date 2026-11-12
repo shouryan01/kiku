@@ -22,3 +22,6 @@ toml = "1.2.1"
 lto = true
 codegen-units = 1
 strip = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.62.2", features = ["Media_Control", "Foundation"] }

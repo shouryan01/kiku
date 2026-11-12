@@ -1268,6 +1268,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "toml",
+ "windows 0.62.2",
 ]
 
 [[package]]
